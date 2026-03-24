@@ -1,166 +1,128 @@
-// -----------------test bench for atm machine----------------
-module atm_tb_oop;
+//--------------ATM MACHINE PROJECT WITH CHANGE PIN------------------
 
-    reg clk;
-    reg reset;
+module atm_machine (
+    input  logic        clk,
+    input  logic        rst,
 
-    reg card_insert;
-    reg [1:0] acc_select;
-    reg [3:0] pin_entered;
-    reg pin_submit;
+    input  logic        card_inserted,
+    input  logic [1:0]  acc_select,
+    input  logic [3:0]  entered_pin,
+    input  logic        pin_submit,
 
-    reg withdraw_req, deposit_req, balance_req, exit_req;
-    reg [15:0] amount;
+    input  logic        withdraw_req,
+    input  logic        deposit_req,
+    input  logic        balance_req,
+    input  logic        change_pin_req, // Semnal nou pentru schimbare PIN
+    input  logic        exit_req,
 
-    wire pin_ok;
-    wire locked;
-    wire transaction_done;
-    wire insufficient_balance;
-    wire atm_cash_low;
-    wire [15:0] balance;
-    wire [15:0] atm_cash;
-    wire [2:0] state_out;
+    input  logic [15:0] amount,
 
+    output logic        pin_ok,
+    output logic        locked,
+    output logic        transaction_done,
+    output logic        insufficient_balance,
+    output logic        atm_cash_low,
 
-    // DUT
-    atm_machine dut (
-    .clk(clk),
-    .rst(reset),
-
-    .card_inserted(card_insert),
-    .acc_select(acc_select),
-    .entered_pin(pin_entered),
-    .pin_submit(pin_submit),
-
-    .withdraw_req(withdraw_req),
-    .deposit_req(deposit_req),
-    .balance_req(balance_req),
-    .exit_req(exit_req),
-
-    .amount(amount),
-
-    .pin_ok(pin_ok),
-    .locked(locked),
-    .transaction_done(transaction_done),
-    .insufficient_balance(insufficient_balance),
-    .atm_cash_low(atm_cash_low),
-
-    .balance(balance),
-    .atm_cash(atm_cash),
-    .state_out(state_out)
+    output logic [15:0] balance,
+    output logic [15:0] atm_cash,
+    output logic [2:0]  state_out
 );
 
-    // Clock
-    always #5 clk = ~clk;
+    parameter int NUM_ACCOUNTS     = 3; 
+    parameter int MAX_PIN_ATTEMPTS = 3; 
+    parameter int MINI_STMT_SIZE   = 5; 
 
-    // -------------------------
-    // DRIVER CLASS
-    // -------------------------
-    class atm_driver;
+    logic [3:0]  stored_pins      [NUM_ACCOUNTS];
+    logic [15:0] account_balances [NUM_ACCOUNTS]; 
+    logic [1:0]  wrong_count      [NUM_ACCOUNTS];
+    logic        acc_locked       [NUM_ACCOUNTS]; 
+    
+    logic [15:0] atm_cash_reg;
 
-        task insert_card(input int acc);
-            card_insert = 1;
-            acc_select  = acc;
-            #10 card_insert = 0;
-        endtask
+    typedef enum logic [2:0] {
+        IDLE          = 3'b000,
+        CARD_INSERTED = 3'b001,
+        PIN_CHECK     = 3'b010,
+        MENU          = 3'b011,
+        WITHDRAW      = 3'b100,
+        DEPOSIT       = 3'b101,
+        BALANCE_STATE = 3'b110,
+        CHANGE_PIN    = 3'b111  // Stare nouă
+    } state_t; 
 
-        task enter_pin(input logic [3:0] pin);
-            pin_entered = pin;
-            pin_submit  = 1;
-            #10 pin_submit = 0;
-        endtask
+    state_t state, next_state; 
 
-        task withdraw(input int amt);
-            amount = amt;
-            withdraw_req = 1;
-            #10 withdraw_req = 0;
-        endtask
-
-        task deposit(input int amt);
-            amount = amt;
-            deposit_req = 1;
-            #10 deposit_req = 0;
-        endtask
-
-        task check_balance();
-            balance_req = 1;
-            #10 balance_req = 0;
-        endtask
-
-        task exit_atm();
-            exit_req = 1;
-            #10 exit_req = 0;
-        endtask
-
-    endclass
-
-    atm_driver drv;
-
-    // -------------------------
-    // TEST SEQUENCE
-    // -------------------------
-    initial begin
-        clk = 0;
-        reset = 1;
-
-        card_insert = 0;
-        acc_select = 0;
-        pin_entered = 0;
-        pin_submit = 0;
-
-        withdraw_req = 0;
-        deposit_req = 0;
-        balance_req = 0;
-        exit_req = 0;
-        amount = 0;
-
-        #20 reset = 0;
-
-        drv = new();
-
-        // --------------------------
-        // TEST 1: Correct PIN
-        // --------------------------
-        $display("\n---- TEST 1: Correct PIN ----");
-        drv.insert_card(0);
-        #10 drv.enter_pin(4'b1010);
-
-        #20 drv.check_balance();
-        #20 drv.withdraw(1000);
-        #20 drv.deposit(500);
-        #20 drv.exit_atm();
-
-        // --------------------------
-        // TEST 2: Wrong PIN 3 times -> lock
-        // --------------------------
-        $display("\n---- TEST 2: Wrong PIN attempts ----");
-        drv.insert_card(1);
-
-        #10 drv.enter_pin(4'b0000);
-        #20 drv.enter_pin(4'b0001);
-        #20 drv.enter_pin(4'b0010);
-
-        #30 $display("Account Locked Status = %0d", locked);
-
-        // Try correct PIN after lock
-        #10 drv.enter_pin(4'b0101);
-        #30 $display("Pin OK after lock = %0d", pin_ok);
-
-        // --------------------------
-        // TEST 3: ATM Cash Limit Check
-        // --------------------------
-        $display("\n---- TEST 3: ATM Cash Limit ----");
-        drv.insert_card(2);
-        #10 drv.enter_pin(4'b1111);
-
-        #20 drv.withdraw(15000);  // should fail if ATM cash not enough
-        #20 drv.withdraw(2000);
-
-        #50 $finish;
+    // Next state logic
+    always_comb begin
+        next_state = state;
+        case (state)
+            IDLE:          if (card_inserted) next_state = CARD_INSERTED; 
+            CARD_INSERTED: next_state = PIN_CHECK;
+            PIN_CHECK:     if (pin_submit) begin
+                               if (acc_locked[acc_select]) next_state = IDLE; 
+                               else if (entered_pin == stored_pins[acc_select]) next_state = MENU; 
+                           end
+            MENU: begin
+                if (withdraw_req)      next_state = WITHDRAW; 
+                else if (deposit_req)  next_state = DEPOSIT;
+                else if (balance_req)  next_state = BALANCE_STATE; 
+                else if (change_pin_req) next_state = CHANGE_PIN; // Tranziție nouă
+                else if (exit_req)     next_state = IDLE;
+            end
+            WITHDRAW, DEPOSIT, BALANCE_STATE, CHANGE_PIN: next_state = MENU;
+            default: next_state = IDLE;
+        endcase
     end
-initial begin 
-  $dumpfile("atm_machine.vcd"); // Name of the waveform file
-  $dumpvars(0,atm_tb_oop); // 0 dumps all variables in the module
-end
+
+    // Sequential logic
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst) begin
+            state <= IDLE; 
+            atm_cash_reg <= 16'd20000; 
+            stored_pins[0] <= 4'b1010; stored_pins[1] <= 4'b0101; stored_pins[2] <= 4'b1111; 
+            account_balances[0] <= 16'd5000; account_balances[1] <= 16'd9000; account_balances[2] <= 16'd3000; 
+            for(int i=0; i<NUM_ACCOUNTS; i++) begin acc_locked[i] <= 0; wrong_count[i] <= 0; end 
+        end else begin
+            state <= next_state;
+            transaction_done <= 0;
+            
+            case (state)
+                PIN_CHECK: begin
+                    if (pin_submit && !acc_locked[acc_select]) begin
+                        if (entered_pin == stored_pins[acc_select]) begin
+                            pin_ok <= 1;
+                            wrong_count[acc_select] <= 0; 
+                        end else begin
+                            wrong_count[acc_select] <= wrong_count[acc_select] + 1;
+                            if (wrong_count[acc_select] + 1 >= MAX_PIN_ATTEMPTS) acc_locked[acc_select] <= 1; 
+                        end
+                    end
+                end
+                
+                CHANGE_PIN: begin
+                    stored_pins[acc_select] <= amount[3:0]; // Salvăm noul PIN
+                    transaction_done <= 1;
+                end
+
+                WITHDRAW: begin
+                    if (account_balances[acc_select] >= amount && atm_cash_reg >= amount) begin
+                        account_balances[acc_select] <= account_balances[acc_select] - amount; 
+                        atm_cash_reg <= atm_cash_reg - amount;
+                        transaction_done <= 1; 
+                    end
+                end
+                
+                DEPOSIT: begin
+                    account_balances[acc_select] <= account_balances[acc_select] + amount; 
+                    atm_cash_reg <= atm_cash_reg + amount;
+                    transaction_done <= 1;
+                end
+            endcase
+        end
+    end
+
+    assign balance   = account_balances[acc_select]; 
+    assign atm_cash  = atm_cash_reg; 
+    assign state_out = state;
 
 endmodule
